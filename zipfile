@@ -1,0 +1,22 @@
+async def async_zip_directory(input_dir, output_zip, chunk_size=1024 * 1024):
+    loop = asyncio.get_event_loop()
+    with zipfile.ZipFile(output_zip, "w", zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(input_dir):
+            for file in files:
+                file_path = os.path.join(root, file)
+                arcname = os.path.relpath(file_path, input_dir)
+
+                size = os.path.getsize(file_path)
+                if size == 0:
+                    await loop.run_in_executor(
+                        None, zipf.writestr, arcname, b""
+                    )  # Create empty file entry first
+                else:
+                    async with aiofiles.open(file_path, "rb") as f:
+                        while True:
+                            data = await f.read(chunk_size)
+                            if not data:
+                                break
+                            await loop.run_in_executor(
+                                None, zipf.writestr, arcname, data
+                            )
