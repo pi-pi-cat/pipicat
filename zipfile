@@ -20,3 +20,17 @@ async def async_zip_directory(input_dir, output_zip, chunk_size=1024 * 1024):
                             await loop.run_in_executor(
                                 None, zipf.writestr, arcname, data
                             )
+
+
+
+ef generate_large_file(file_path, chunk_size=1024*1024):
+    with open(file_path, 'rb') as file:
+        while chunk := file.read(chunk_size):
+            yield chunk
+
+@app.get("/download")
+async def download_file():
+    file_path = "path_to_your_large_zip_file"
+    response = StreamingResponse(generate_large_file(file_path), media_type='application/zip')
+    response.headers["Content-Disposition"] = f"attachment; filename={os.path.basename(file_path)}"
+    return response
