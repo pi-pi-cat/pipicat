@@ -28,6 +28,7 @@ for filename in os.listdir(prefix_dir):
         match = re.match(r"([\w-]+)-([\d\.]+)-.+\.whl", filename)
         if match:
             name, version = match.groups()
+            name = name.replace("_", "-")
 
             try:
                 # 构建PyPI网页URL
