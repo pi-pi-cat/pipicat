@@ -54,7 +54,7 @@ for filename in os.listdir(prefix_dir):
                 # 下载meta.yaml
                 recipe_dir = os.path.join(prefix_dir, "conda", name, "conda.recipe")
                 os.makedirs(recipe_dir, exist_ok=True)
-                feedstock_url = f"https://github.com/conda-forge/{name}-feedstock/blob/main/recipe/meta.yaml"
+                feedstock_url = f"https://raw.githubusercontent.com/conda-forge/{name}-feedstock/main/recipe/meta.yaml"
                 recipe_path = os.path.join(recipe_dir, "meta.yaml")
                 download_file(feedstock_url, recipe_path)
                 print(f"下载meta.yaml {name} 成功")
