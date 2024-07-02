@@ -3,15 +3,20 @@ import heapq
 import random
 from rich.console import Console
 from rich.table import Table
+from rich.progress import Progress, TaskID
 
 console = Console()
 
 
 class MultiLevelQueueScheduler:
-    def __init__(self, num_levels, level_timeouts):
+    def __init__(self, num_levels, level_timeouts, test_session, total_cases):
         self.num_levels = num_levels
         self.level_timeouts = level_timeouts
         self.queues = [[] for _ in range(num_levels)]
+        self.test_session = test_session
+        self.total_cases = total_cases
+        self.progress = Progress()
+        self.task_id = None
 
     def add_case(self, case):
         heapq.heappush(self.queues[case.queue_level], (case.predicted_runtime, case))
@@ -47,6 +52,7 @@ class MultiLevelQueueScheduler:
             queue_level=case.queue_level,
             result_dir=case.result_dir,
             status=status,
+            session=self.test_session,
         )
 
         console.print(case.rich_panel())
@@ -59,16 +65,28 @@ class MultiLevelQueueScheduler:
                 f"[red]Case {case.case_id} failed to execute within time limit[/red]"
             )
 
+        # 暂停进度条显示以打印案例信息
+        self.progress.stop()
+        console.print(case.rich_panel())
+        self.progress.start()
+
         return success
 
     async def run_cases(self):
-        while True:
-            case = self.get_next_case()
-            if not case:
-                break
+        with self.progress:
+            self.task_id = self.progress.add_task(
+                "[cyan]Executing cases...", total=self.total_cases
+            )
 
-            console.print(f"\n[bold]Running[/bold]", case.rich_panel())
-            success = await self.execute_case(case)
+            while True:
+                case = self.get_next_case()
+                if not case:
+                    break
 
-            if not success:
-                self.move_to_next_queue(case)
+                console.print(f"\n[bold]Running[/bold]", case.rich_panel())
+                success = await self.execute_case(case)
+
+                if not success:
+                    self.move_to_next_queue(case)
+
+                self.progress.update(self.task_id, advance=1)

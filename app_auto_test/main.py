@@ -6,15 +6,22 @@ console = Console()
 
 
 async def init_db():
-    await Tortoise.init(db_url="sqlite://cases.db", modules={"models": ["__main__"]})
+    await Tortoise.init(
+        db_url="sqlite://cases.db?mode=rwc", modules={"models": ["__main__"]}
+    )
     await Tortoise.generate_schemas()
 
 
 async def main():
     await init_db()
 
+    test_session = await TestSession.create(
+        description="Test run " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    total_cases = len(cases)
+
     # 创建一个3级队列调度器,每级的超时时间分别为10, 20, 30秒
-    scheduler = MultiLevelQueueScheduler(3, [10, 20, 30])
+    scheduler = MultiLevelQueueScheduler(3, [10, 20, 30], test_session, total_cases)
 
     # 创建一些测试案例
     cases = [
@@ -33,7 +40,7 @@ async def main():
     await scheduler.run_cases()
 
     # 查询并打印数据库中的结果
-    results = await CaseModel.all()
+    results = await CaseModel.filter(session=test_session).prefetch_related("session")
 
     table = Table(title="Database Records")
     table.add_column("Case ID", style="cyan", no_wrap=True)
@@ -52,6 +59,15 @@ async def main():
         )
 
     console.print(table)
+
+    # 打印测试会话信息
+    console.print(
+        Panel(
+            f"Test Session ID: {test_session.id}\nStart Time: {test_session.start_time}\nDescription: {test_session.description}",
+            title="Test Session Info",
+            border_style="green",
+        )
+    )
 
     await Tortoise.close_connections()
 
