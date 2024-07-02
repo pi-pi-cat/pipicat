@@ -3,19 +3,35 @@ import heapq
 import random
 from rich.console import Console
 from rich.table import Table
-from rich.progress import Progress, TaskID
+from rich.progress import Progress, BarColumn, TextColumn, TimeElapsedColumn
+from model import CaseModel
+from desk_manager import DeskManager
+from case_executor import CaseExecutor
 
 console = Console()
 
 
 class MultiLevelQueueScheduler:
-    def __init__(self, num_levels, level_timeouts, test_session, total_cases):
+    def __init__(
+        self, num_levels, level_timeouts, test_session, total_cases, concurrency_limit=2
+    ):
         self.num_levels = num_levels
         self.level_timeouts = level_timeouts
+        self.concurrency_limit = concurrency_limit
         self.queues = [[] for _ in range(num_levels)]
+        self.task_queue = asyncio.Queue()
         self.test_session = test_session
         self.total_cases = total_cases
-        self.progress = Progress()
+        self.progress = Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            "[progress.percentage]{task.percentage:>3.1f}%",
+            TimeElapsedColumn(),
+        )
+        self.progress_task = self.progress.add_task(
+            "Processing cases...", total=total_cases
+        )
+
         self.task_id = None
 
     def add_case(self, case):
@@ -32,61 +48,44 @@ class MultiLevelQueueScheduler:
             case.queue_level += 1
             self.add_case(case)
         else:
-            print(f"Case {case.case_id} has failed in all queues.")
+            console.print(f"[red]Case {case.case_id} has failed in all queues.[/red]")
 
-    async def execute_case(self, case):
-        # 模拟案例执行
-        case.actual_runtime = random.uniform(
-            0.5 * case.predicted_runtime, 1.5 * case.predicted_runtime
-        )
-        await asyncio.sleep(0.1)  # 模拟执行时间
+    async def worker(self, desk_id):
+        desk_manager = DeskManager(desk_id)
+        case_executor = CaseExecutor(desk_manager, self.test_session)
 
-        success = case.actual_runtime <= self.level_timeouts[case.queue_level]
-        status = "Success" if success else "Failure"
-
-        # 将案例结果写入数据库
-        await CaseModel.create(
-            case_id=case.case_id,
-            predicted_runtime=case.predicted_runtime,
-            actual_runtime=case.actual_runtime,
-            queue_level=case.queue_level,
-            result_dir=case.result_dir,
-            status=status,
-            session=self.test_session,
-        )
-
-        console.print(case.rich_panel())
-        if success:
+        while True:
+            case = await self.task_queue.get()
+            if case is None:
+                self.task_queue.task_done()
+                break
             console.print(
-                f"[green]Case {case.case_id} executed successfully in {case.actual_runtime:.2f} seconds[/green]"
+                f"\n[bold]Running on desk {desk_id}[/bold]", case.rich_panel()
             )
-        else:
-            console.print(
-                f"[red]Case {case.case_id} failed to execute within time limit[/red]"
-            )
-
-        # 暂停进度条显示以打印案例信息
-        self.progress.stop()
-        console.print(case.rich_panel())
-        self.progress.start()
-
-        return success
+            success = await case_executor.execute_case(case, self.progress_task)
+            if not success:
+                self.move_to_next_queue(case)
+            self.task_queue.task_done()
+            await asyncio.sleep(10)
 
     async def run_cases(self):
         with self.progress:
-            self.task_id = self.progress.add_task(
-                "[cyan]Executing cases...", total=self.total_cases
-            )
+            workers = [
+                asyncio.create_task(self.worker(desk_id))
+                for desk_id in range(self.concurrency_limit)
+            ]
 
-            while True:
-                case = self.get_next_case()
-                if not case:
-                    break
+            while any(self.queues) or not self.task_queue.empty():
+                while self.task_queue.qsize() < self.concurrency_limit:
+                    case = self.get_next_case()
+                    if case is None:
+                        break
+                    await self.task_queue.put(case)
 
-                console.print(f"\n[bold]Running[/bold]", case.rich_panel())
-                success = await self.execute_case(case)
+                await asyncio.sleep(0.1)  # 避免过度占用CPU
 
-                if not success:
-                    self.move_to_next_queue(case)
+            for _ in range(self.concurrency_limit):
+                await self.task_queue.put(None)
 
-                self.progress.update(self.task_id, advance=1)
+            await self.task_queue.join()
+            await asyncio.gather(*workers, return_exceptions=True)

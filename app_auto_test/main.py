@@ -1,27 +1,23 @@
 from tortoise import Tortoise, run_async
 from rich.console import Console
 from rich.table import Table
+from rich.panel import Panel
+from MultiLevelQueueScheduler import MultiLevelQueueScheduler
+from case import Case
+from model import TestSession, CaseModel
+import datetime
+import asyncio
 
 console = Console()
 
 
 async def init_db():
-    await Tortoise.init(
-        db_url="sqlite://cases.db?mode=rwc", modules={"models": ["__main__"]}
-    )
+    await Tortoise.init(db_url="sqlite://cases.db", modules={"models": ["model"]})
     await Tortoise.generate_schemas()
 
 
 async def main():
     await init_db()
-
-    test_session = await TestSession.create(
-        description="Test run " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    )
-    total_cases = len(cases)
-
-    # 创建一个3级队列调度器,每级的超时时间分别为10, 20, 30秒
-    scheduler = MultiLevelQueueScheduler(3, [10, 20, 30], test_session, total_cases)
 
     # 创建一些测试案例
     cases = [
@@ -31,6 +27,14 @@ async def main():
         Case(4, 5),
         Case(5, 12),
     ]
+
+    test_session = await TestSession.create(
+        description="Test run " + datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    )
+    total_cases = len(cases)
+
+    # 创建一个3级队列调度器,每级的超时时间分别为10, 20, 30秒
+    scheduler = MultiLevelQueueScheduler(3, [10, 20, 30], test_session, total_cases)
 
     # 将案例添加到调度器
     for case in cases:
@@ -73,4 +77,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    run_async(main())
+    asyncio.run(main())
