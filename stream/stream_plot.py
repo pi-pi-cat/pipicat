@@ -5,50 +5,66 @@ from model import TestSession, CaseModel
 import plotly.express as px
 import plotly.figure_factory as ff
 import asyncio
-import time
 from datetime import datetime, timezone
 
 
-async def init_db():
-    await Tortoise.init(
-        db_url="sqlite://cases.db?mode=rwc", modules={"models": ["model"]}
-    )
-    await Tortoise.generate_schemas()
+# 初始化数据库连接
+@st.cache_resource
+def init_db():
+    async def _init():
+        await Tortoise.init(
+            db_url="sqlite://cases.db?mode=rwc", modules={"models": ["model"]}
+        )
+        await Tortoise.generate_schemas()
+
+    asyncio.run(_init())
+    return True
 
 
-async def get_session_names():
-    return await TestSession.all().values_list("session_name", flat=True)
+# 获取会话名称
+@st.cache_data(ttl=60)  # 缓存1分钟
+def get_session_names():
+    async def _get_names():
+        return await TestSession.all().values_list("session_name", flat=True)
+
+    return asyncio.run(_get_names())
 
 
-async def get_cases_by_session(session_name):
-    session = await TestSession.get(session_name=session_name)
-    return await CaseModel.filter(session=session).all()
+# 获取特定会话的数据
+@st.cache_data(ttl=60)  # 缓存1分钟
+def get_session_data(_session_name):
+    async def _get_data():
+        session = await TestSession.get(session_name=_session_name)
+        cases = await CaseModel.filter(session=session).all()
+        df = pd.DataFrame([case.__dict__ for case in cases])
+        for col in ["start_time", "end_time"]:
+            df[col] = pd.to_datetime(df[col], utc=True)
+        return df
+
+    return asyncio.run(_get_data())
 
 
-def create_gantt_chart(df):
+def create_gantt_chart(df, page=1, page_size=50):
     now = datetime.now(timezone.utc)
 
-    # 将 start_time 和 end_time 转换为 UTC 时间
-    df["start_time"] = pd.to_datetime(df["start_time"], utc=True)
-    df["end_time"] = pd.to_datetime(df["end_time"], utc=True)
-
-    # 对于 end_time 为 NaT 的行，填充为当前时间
     df["end_time"] = df["end_time"].fillna(now)
+    df = df.sort_values("end_time", ascending=True)
 
-    df = df.sort_values("end_time", ascending=False)
+    # 分页
+    start = (page - 1) * page_size
+    end = start + page_size
+    df_page = df.iloc[start:end]
 
     gantt_df = pd.DataFrame(
         {
-            "Task": df["id"].astype(str),
-            "Start": df["start_time"],
-            "Finish": df["end_time"],
-            "Status": df["status"],
+            "Task": df_page["id"].astype(str),
+            "Start": df_page["start_time"],
+            "Finish": df_page["end_time"],
+            "Status": df_page["status"],
         }
     )
 
-    # 计算适当的高度
-    num_cases = len(gantt_df)
-    height = max(600, num_cases * 30)  # 每个 case 至少 30px 高，最小高度为 600px
+    height = len(gantt_df) * 30  # 每个 case 30px 高
 
     fig = ff.create_gantt(
         gantt_df,
@@ -62,79 +78,80 @@ def create_gantt_chart(df):
         group_tasks=True,
         showgrid_x=True,
         showgrid_y=True,
-        title="Case 运行时间线",
+        title=f"Case 运行时间线 (第 {page} 页)",
     )
 
     fig.update_layout(
-        xaxis_title="时间", yaxis_title="Case ID", height=height, autosize=True
+        xaxis_title="时间 (UTC)", yaxis_title="Case ID", height=height, autosize=True
     )
+
+    fig.update_yaxes(autorange="reversed")
 
     return fig
 
 
-async def async_main():
-    await init_db()
-    session_names = await get_session_names()
+def main():
+    st.title("测试会话数据可视化")
+
+    # 确保数据库已初始化
+    if "db_initialized" not in st.session_state:
+        st.session_state.db_initialized = init_db()
+
+    session_names = get_session_names()
     selected_session = st.selectbox("选择会话", session_names)
 
-    placeholder = st.empty()
+    if selected_session:
+        if (
+            "df" not in st.session_state
+            or st.session_state.current_session != selected_session
+        ):
+            st.session_state.df = get_session_data(selected_session)
+            st.session_state.current_session = selected_session
 
-    while True:
-        with placeholder.container():
-            await init_db()
-            if selected_session:
-                cases = await get_cases_by_session(selected_session)
-                df = pd.DataFrame([case.__dict__ for case in cases])
+        df = st.session_state.df
 
-                st.subheader(f"{selected_session} 的测试用例统计")
+        st.subheader(f"{selected_session} 的测试用例统计")
 
-                running = df[df["status"] == "RUNNING"].shape[0]
-                completed = df[df["status"].isin(["Success", "Failure"])].shape[0]
-                success = df[df["status"] == "Success"].shape[0]
-                failed = df[df["status"] == "Failure"].shape[0]
+        # latest_records = df.sort_values('start_time').groupby('case_number').last().reset_index()
 
-                col1, col2, col3, col4 = st.columns(4)
-                col1.metric("运行中", running)
-                col2.metric("已完成", completed)
-                col3.metric("成功", success)
-                col4.metric("失败", failed)
+        running = df[df["status"] == "RUNNING"].shape[0]
+        completed = df[df["status"].isin(["Success", "Failure"])].shape[0]
+        success = df[df["status"] == "Success"].shape[0]
+        failed = df[df["status"] == "Failure"].shape[0]
 
-                # 饼图
-                st.subheader("测试用例状态分布")
-                status_counts = df["status"].value_counts().reset_index()
-                status_counts.columns = ["status", "count"]
-                pie_fig = px.pie(
-                    status_counts,
-                    values="count",
-                    names="status",
-                    title="测试用例状态分布",
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("运行中", running)
+        col2.metric("已完成", completed)
+        col3.metric("成功", success)
+        col4.metric("失败", failed)
+
+        # 饼图
+        st.subheader("测试用例状态分布")
+        status_counts = df["status"].value_counts().reset_index()
+        status_counts.columns = ["status", "count"]
+        pie_fig = px.pie(
+            status_counts,
+            values="count",
+            names="status",
+            title="测试用例状态分布",
+        )
+        st.plotly_chart(pie_fig)
+
+        # 甘特图（可展开）
+        with st.expander("点击展开查看 Case 运行时间线"):
+            if not df.empty:
+                total_pages = (len(df) - 1) // 50 + 1
+                page = st.slider("选择页面", 1, total_pages, 1)
+
+                gantt_fig = create_gantt_chart(df, page)
+                st.plotly_chart(gantt_fig, use_container_width=True)
+
+                st.write(
+                    f"显示 {len(df)} 个 cases 中的第 {(page-1)*50+1} 到 {min(page*50, len(df))} 个"
                 )
-                st.plotly_chart(pie_fig)
-
-                # 显示详细数据表格
-                st.subheader("测试用例详细信息")
-                st.dataframe(df)
-
-                # 甘特图（可展开）
-                with st.expander("点击展开查看 Case 运行时间线"):
-                    if not df.empty:
-                        gantt_fig = create_gantt_chart(df)
-                        st.plotly_chart(gantt_fig, use_container_width=True)
-                    else:
-                        st.write("没有可用的数据来创建甘特图。")
-
-            await Tortoise.close_connections()
-        # break
-        time.sleep(50)
-        st.rerun()
-
-
-def main():
-    loop = asyncio.new_event_loop()
-    asyncio.run(async_main())
-    loop.run_until_complete(async_main())
+            else:
+                st.write("没有可用的数据来创建甘特图。")
 
 
 if __name__ == "__main__":
-    st.title("测试会话数据可视化")
     main()
