@@ -114,3 +114,54 @@ async def delete_task_result(task_id: str):
         raise HTTPException(status_code=404, detail="Task not found")
     
     return {"message": "Task result deleted successfully"}
+
+
+
+
+# 上下文环境使用教程
+from contextlib import contextmanager, asynccontextmanager
+import asyncio
+
+# 同步上下文管理器示例
+@contextmanager
+def file_manager(filename):
+    print(f"Opening file: {filename}")
+    file = open(filename, 'w')
+    try:
+        yield file
+    finally:
+        print(f"Closing file: {filename}")
+        file.close()
+
+# 使用同步上下文管理器
+def use_sync_context():
+    with file_manager("test.txt") as f:
+        f.write("Hello, World!")
+    print("File operation completed.")
+
+# 异步上下文管理器示例
+@asynccontextmanager
+async def async_resource_manager():
+    print("Acquiring resource...")
+    await asyncio.sleep(1)  # 模拟异步操作
+    resource = "Async Resource"
+    try:
+        yield resource
+    finally:
+        print("Releasing resource...")
+        await asyncio.sleep(1)  # 模拟异步清理操作
+
+# 使用异步上下文管理器
+async def use_async_context():
+    async with async_resource_manager() as resource:
+        print(f"Using {resource}")
+        await asyncio.sleep(1)  # 模拟异步操作
+    print("Async operation completed.")
+
+# 运行示例
+if __name__ == "__main__":
+    print("Synchronous context manager example:")
+    use_sync_context()
+
+    print("\nAsynchronous context manager example:")
+    asyncio.run(use_async_context())
